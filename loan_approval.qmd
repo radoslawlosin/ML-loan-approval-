@@ -202,7 +202,7 @@ Wyświetlmy wykres pokazujący wpływ współudziału dodatkowej osoby w kredyci
 ```{r}
 ggplot(df, aes(x=df$ApplicantIncome, y=df$CoapplicantIncome, alpha=df$Loan_Status)) + geom_point(size = 1, color="blue") + xlim(0, 8000) + ylim(0, 8000) +
     ggtitle("Dochody kredytobiorców") + xlab("Dochód głównego kredytobiorcy") + ylab("Dochód dodatkowej osoby") 
-    theme_ipsum()
+   
 ```
 
 Na podstawie powyższego wykresu można zaobserwować wiele pozytywnych decyzji kredytowych dla osób samotnie zaciągajacych kredyt. Sprawdźmy jak to wygląda w liczbach:

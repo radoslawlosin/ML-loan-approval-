@@ -1,0 +1,692 @@
+---
+title: "loan_approval_project"
+author: "Radosław Łosin"
+format: R
+editor: RStudio
+---
+
+### *Machine learning algorithms in loan approval prediction.*
+
+### 1. Project goals
+
+-   Prepare the dataset about Borrowers, cleansing data and understanding variables in dataset;
+
+-   Divide the dataset for training data, validation data and test data;
+
+-   Model training using supervised machine learning algorithms (Logistic regression and Random Forest algorithms);
+
+-   Model validation and optimization;
+
+-   Analysis of the results of models - accuracy ;
+
+-   Simulation of the Loan approval decision for new Applicant.
+
+-   Presenting the potential benefits and risks of the model results to financial institution.
+
+------------------------------------------------------------------------
+
+First step: install packages (libraries) to environment;
+
+```{r}
+pacman::p_load(tidyverse, broom, car, GGally, caret, ISLR, pROC, class, glmnet, vip, randomForest, rpart, rpart.plot, tictoc, ggplot2, dplyr, ggplot2)
+options(scipen = 20)
+theme_set(theme_bw())
+```
+
+### 2. Preparing of the dataset 
+
+In this project the dataset from kaggle.com has been used:
+
+<https://www.kaggle.com/datasets/krishnaraj30/finance-loan-approval-prediction-data/data?select=train.csv>
+
+This dataset contains 2 modules:
+
+-   training (train.csv) that contains column with loan decision. We divide this module to 3 subset: training, validation and test.
+
+-   test (test.csv) that contains never seen before data of new applicants;
+
+Upload training data train.csv, and delete the Loan_ID column - it's unnecessary for loan decision:
+
+```{r}
+df = read.csv('D://data scientist//projekt//loan approval//raw_data//train.csv'
+, na.strings= "",
+stringsAsFactors = TRUE
+) %>% 
+  select(-Loan_ID)
+```
+
+Then check which columns contains NULL cells and how many:
+
+```{r}
+colSums(is.na(df))
+```
+
+The NULLs in cells are unwanted, so we must replace NULLs for values:
+
+-   gender is "Female";
+
+-   Married is Yes;
+
+-   Dependents is 1;
+
+-   Self_Employed is Yes;
+
+-   LoanAmount is average;
+
+-   Loan_Amount_Term is average;
+
+-   Credit_History na 0 (no credit history).
+
+-   Loan_Status from Yes/No for 1/0 (factor).
+
+```{r}
+df$Gender[is.na(df$Gender)]= "Female"
+df$Married[is.na(df$Married)]= "Yes"
+df$Dependents[is.na(df$Dependents)]= 1
+df$Self_Employed[is.na(df$Self_Employed)]= "Yes"
+df$LoanAmount[is.na(df$LoanAmount)] = (mean(df$LoanAmount, na.rm = TRUE))
+df$Loan_Amount_Term[is.na(df$Loan_Amount_Term)] = (mean(df$Loan_Amount_Term, na.rm = TRUE))
+df$Credit_History[is.na(df$Credit_History)]= 1
+df$Loan_Status <- with(df, ifelse(df$Loan_Status == "Y", 1, 0))
+df$Loan_Status = as.factor(df$Loan_Status)
+table(df$Gender)
+table(df$Married)
+table(df$Dependents)
+table(df$Self_Employed)
+table(df$Loan_Amount)
+table(df$Loan_Amount_Term)
+table(df$Credit_History)
+table(df$Loan_Status)
+colSums(is.na(df))
+summary(df)
+```
+
+Add extra column (applicantquantity) with information about coapplicants:
+
+```{r}
+df$applicantquantity <- with(df, ifelse(df$CoapplicantIncome == 0, 1, 2))
+```
+
+Then add an extra column with information about dependents (0 or 1). If Applicant have 0 dependents it will be 0, else 1.
+
+```{r}
+df$anyDependents <- with(df, ifelse(df$Dependents == "0", 0, 1))
+```
+
+Train module now looks like this:
+
+```{r}
+df
+```
+
+The training module is now ready for further operation.
+
+### 3. Training, validation and test subset.
+
+The next step is to divide train.csv to 3 subset: training, validation and test.
+
+-   Set randomness set.seed(123);
+-   Training subset (df_train) will contain 75 % of data from train.csv;
+-   The validation subset (df_valid) will be divided from df_train (33% of df_train)
+-   Test subset (df_test) will contain other 25 % of data from train.csv;
+
+```{r}
+set.seed(123)
+# Wyodrębnienie zbioru treningowego
+train_index = sample(
+  1:nrow(df)
+  , size = floor(0.75 * nrow(df))
+)
+
+df_train = df[train_index, ]
+df_test = df[-train_index, ]
+
+# Wyodrębnienie zbioru walidacyjnego
+train_index2 = sample(
+  1:nrow(df_train)
+  , size = floor(0.66 * nrow(df_train))
+)
+# Wyodrębnienie zbioru testowego 
+
+df_valid = df_train[-train_index2, ]
+df_train = df_train[train_index2, ]
+
+nrow(df_train) + nrow(df_valid) + nrow(df_test)
+```
+
+Check balance of the data:
+
+```{r}
+table(df_train$Loan_Status)
+table(df_test$Loan_Status)
+table(df_valid$Loan_Status)
+```
+
+Ratio of variables 0/1 is from 1 to 2 - the datasets are balanced.
+
+### 4. Visualization of dataset
+
+```{r}
+boxplot(df$ApplicantIncome,
+main = "Applicant income",
+xlab = "income",
+col = "orange",
+border = "blue",
+horizontal = TRUE,
+notch = TRUE
+)
+```
+
+On box-plot we see outliers (income \> 80k rupees, average income 5403 i median 3812 rupees). For our analyses this box-plot is hardly legible.
+
+Let see it on histogram for limit 10k rupees.
+
+```{r}
+hist(df$ApplicantIncome,
+     xlim = c(0, 10000),
+xlab = "Income",
+ylab = "Quantity",
+breaks = 1000)
+```
+
+Let see chart that presents impact of coapplicant and income for loan status.
+
+```{r}
+ggplot(df, aes(x=df$ApplicantIncome, y=df$CoapplicantIncome, alpha=df$Loan_Status)) + geom_point(size = 1, color="blue") + xlim(0, 8000) + ylim(0, 8000) +
+    ggtitle("") + xlab("Income of applicant") + ylab("Income of coapplicant") 
+   
+```
+
+We can see that many single applicants got positive loan status.
+
+```{r}
+q1 <- as.data.frame(which(df$applicantquantity == "2" & df$Loan_Status == "1"))
+q2 <- as.data.frame(which(df$applicantquantity == "2" & df$Loan_Status == "0"))
+q3 <- as.data.frame(which(df$applicantquantity == "1" & df$Loan_Status == "1"))
+q4 <- as.data.frame(which(df$applicantquantity == "1" & df$Loan_Status == "0"))
+```
+
+```{r}
+nrow(q1)
+nrow(q2)
+nrow(q3)
+nrow(q4)
+```
+
+Q1 is a number of applicants with coapplicant and positive loan decision (245 applicants);
+
+Q2 is a number of applicants with coapplicant and negative loan decision (96 applicants);
+
+Q3 is a number of single applicants with positive loan decision (177 applicant), Q4 single with negative decision (96 applicants).
+
+### 5. Model training 
+
+In this project two machine learning algorithms will be used:
+
+-   logistic regression - 3 variants;
+
+-   random forest.
+
+The goal of model training is to check how each variable affect on loan status.
+
+#### 5.1. Logistic model 1
+
+```{r}
+model_1 = glm(
+  Loan_Status ~ .-Dependents
+  , data = df_train
+  , family = binomial(link = 'logit')
+)
+
+summary(model_1)
+
+```
+
+The most important impact on loan status is positive credit history of applicant. Next is applicant quantity. Surprisingly in this case Applicant Income has the least influence on the credit decision.
+
+We want to visualize our dependencies with Variable importance plots:
+
+```{r}
+vip(model_1)
+```
+
+#### 5.2. Logistic model 2
+
+In the second logistic regression model we will delete column "anyDependents" and "Applicant Income":
+
+```{r}
+model_2 = glm(
+  Loan_Status ~ .-anyDependents-ApplicantIncome
+  , data = df_train
+  , family = binomial(link = 'logit')
+)
+
+summary(model_2)
+```
+
+In this case credit history is also most important. The less important is Loan amount term and gender of applicant.
+
+```{r}
+vip(model_2)
+```
+
+#### 5.3. Logistic model 3
+
+Third logistic model is without Gender and Loan Amount Term column.
+
+```{r}
+model_3 = glm(
+  Loan_Status ~ .-anyDependents-ApplicantIncome-Loan_Amount_Term-Gender
+  , data = df_train
+  , family = binomial(link = 'logit')
+)
+
+summary(model_3)
+```
+
+Logistic model 3 increase influence of parameters of logistic model 2.
+
+```{r}
+vip(model_3)
+```
+
+#### 5.4. Random forest model
+
+The second machine learning tool in this project is Random Forest algorithm. We set mtry and ntree parameters.
+
+```{r}
+model_rf = randomForest(
+    Loan_Status ~.
+    , data = df_train
+    , mtry = 4
+    , ntree = 1000
+  )
+
+summary(model_rf)
+ 
+```
+
+```{r}
+vip(model_rf)
+```
+
+The difference between variables importance plot is significant. In this case the most important variables: credit history, applicant income, loan amount, coapplicant income. From this point of view this variables fit better to available loan calculators.
+
+### 6. Model evaluation 
+
+For each model compare the results with validation dataset.
+
+```{r}
+y_hat_prob_1 = predict(model_1, newdata = df_valid, type = 'response')
+
+y_hat_prob_2 = predict(model_2, newdata = df_valid, type = 'response')
+
+y_hat_prob_3 = predict(model_3, newdata = df_valid, type = 'response')
+
+y_hat_prob_4 = predict(model_rf, newdata = df_valid, type ='response')
+```
+
+Look at the result of y_hat_prob_1 and y_hat_prob_4.
+
+```{r}
+y_hat_prob_1
+y_hat_prob_4
+```
+
+In y_hat_prob_1 the results is double type of data. We must to change it for 0 or 1. Y_hat_prob_4 is 0/1 default.
+
+```{r}
+y_hat_1 = ifelse(y_hat_prob_1 > 0.50, "1", "0") %>% as.factor()
+y_hat_2 = ifelse(y_hat_prob_2 > 0.50, "1", "0") %>% as.factor()
+y_hat_3 = ifelse(y_hat_prob_3 > 0.50, "1", "0") %>% as.factor()
+y_hat_4 = ifelse(y_hat_prob_4 == 0, "0", "1") %>% as.factor()
+
+```
+
+Look now on y_hat_1.
+
+```{r}
+y_hat_1
+```
+
+Let's check reliability of our models: compare results of validation dataset with training dataset using confusion matrix tool.
+
+```{r}
+cf1 <- confusionMatrix(
+  data = y_hat_1
+  , reference = df_valid$Loan_Status
+  , positive = "1"
+)
+
+cf2 <- confusionMatrix(
+  data = y_hat_2
+  , reference = df_valid$Loan_Status
+  , positive = "1"
+) 
+
+cf3 <- confusionMatrix(
+  data = y_hat_3
+  , reference = df_valid$Loan_Status
+  , positive = "1"
+) 
+
+cf4 <- confusionMatrix(
+  data = y_hat_4
+  , reference = df_valid$Loan_Status
+  , positive = "1"
+)
+```
+
+The fastest way to see accuracy of models:
+
+```{r}
+confusionMatrix(y_hat_1, df_valid$Loan_Status)$overall[1]
+confusionMatrix(y_hat_2, df_valid$Loan_Status)$overall[1]
+confusionMatrix(y_hat_3, df_valid$Loan_Status)$overall[1]
+confusionMatrix(y_hat_4, df_valid$Loan_Status)$overall[1]
+```
+
+Let's check other parameters:
+
+```{r}
+confusionMatrix(y_hat_1, df_valid$Loan_Status, positive = "1")
+confusionMatrix(y_hat_2, df_valid$Loan_Status, positive = "1")
+confusionMatrix(y_hat_3, df_valid$Loan_Status, positive = "1")
+confusionMatrix(y_hat_4, df_valid$Loan_Status, positive = "1")
+```
+
+```{r}
+# Model 1
+
+con_matrx1 <- table(reality = df_valid$Loan_Status, prediction = y_hat_1)
+
+hm1 <- as.data.frame(as.table(con_matrx1))
+
+plot <- ggplot(hm1, aes(x = prediction, y = reality, fill = Freq)) + 
+  geom_tile() + theme_bw() + coord_equal() +
+  scale_fill_distiller(palette = "Blues", direction = 1) +
+  guides(fill = FALSE) +
+  geom_text(aes(label = Freq), color = "black", size = 10)
+
+plot + 
+  scale_x_discrete(limits = c("0", "1"),
+                    labels = c("negative", "positive")) +
+  scale_y_discrete(limits = c("0", "1"),
+                    labels = c("negative", "positive")) +
+  theme(axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20))
+  
+  
+```
+
+```{r}
+
+# Model 2 
+
+con_matrx2 <- table(reality = df_valid$Loan_Status, prediction = y_hat_2)
+
+hm2 <- as.data.frame(as.table(con_matrx2))
+
+plot <- ggplot(hm2, aes(x = prediction, y = reality, fill = Freq)) + 
+  geom_tile() + theme_bw() + coord_equal() +
+  scale_fill_distiller(palette = "Blues", direction = 1) +
+  guides(fill = FALSE) +
+  geom_text(aes(label = Freq), color = "black", size = 10)
+
+plot + 
+  scale_x_discrete(limits = c("0", "1"),
+                    labels = c("negative", "positive")) +
+  scale_y_discrete(limits = c("0", "1"),
+                    labels = c("negative", "positive")) +
+  theme(axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20))
+```
+
+```{r}
+
+# Model 3
+
+con_matrx3 <- table(reality = df_valid$Loan_Status, prediction = y_hat_3)
+
+hm3 <- as.data.frame(as.table(con_matrx3))
+
+plot <- ggplot(hm3, aes(x = prediction, y = reality, fill = Freq)) + 
+  geom_tile() + theme_bw() + coord_equal() +
+  scale_fill_distiller(palette = "Blues", direction = 1) +
+  guides(fill = FALSE) +
+  geom_text(aes(label = Freq), color = "black", size = 10)
+
+plot + 
+  scale_x_discrete(limits = c("0", "1"),
+                    labels = c("negative", "positive")) +
+  scale_y_discrete(limits = c("0", "1"),
+                    labels = c("negative", "positive")) +
+  theme(axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20))
+```
+
+```{r}
+
+# Model 4 
+
+con_matrx4 <- table(reality = df_valid$Loan_Status, prediction = y_hat_4)
+
+hm4 <- as.data.frame(as.table(con_matrx4))
+
+plot <- ggplot(hm4, aes(x = prediction, y = reality, fill = Freq)) + 
+  geom_tile() + theme_bw() + coord_equal() +
+  scale_fill_distiller(palette = "Blues", direction = 1) +
+  guides(fill = FALSE) +
+  geom_text(aes(label = Freq), color = "black", size = 10)
+
+plot + 
+  scale_x_discrete(limits = c("0", "1"),
+                    labels = c("negative", "positive")) +
+  scale_y_discrete(limits = c("0", "1"),
+                    labels = c("negative", "positive")) +
+  theme(axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20))
+```
+
+Model 1
+
+![](images/clipboard-771795697.png){width="163"}
+
+------------------------------------------------------------------------
+
+Model 2
+
+![](images/clipboard-1717435807.png){width="167"}
+
+------------------------------------------------------------------------
+
+Model 3
+
+![](images/clipboard-3518847878.png){width="154"}
+
+------------------------------------------------------------------------
+
+Model 4 - random forest.
+
+![](images/clipboard-2563725918.png){width="164"}
+
+Further analysis will be taken for model 3 and model 4.
+
+#### 6.1. Model evaluation on test dataset.
+
+Improve specification by increasing threshold of results model 3 from 0.5 to 0.7.
+
+```{r}
+y_hat_prob_3b = predict(
+  model_3
+  , newdata = df_test
+  , type = 'response'
+  
+)
+
+y_hat_3b = ifelse(y_hat_prob_3b > 0.70, 1, 0) %>% as.factor()
+
+confusionMatrix(y_hat_3b, df_test$Loan_Status, positive = "1")
+confusionMatrix(y_hat_3b, df_test$Loan_Status)$overall[1]
+```
+
+Let's do the same on random forest model:
+
+```{r}
+y_hat_prob_rf = predict(
+  model_rf
+  , newdata = df_test
+  , type = 'prob'
+  
+)
+
+y_hat_prob_rf2 <- y_hat_prob_rf[, -1]
+y_hat_rf = ifelse(y_hat_prob_rf2 > 0.5, 1, 0) %>% as.factor()
+
+confusionMatrix(y_hat_rf, df_test$Loan_Status, positive = "1")
+confusionMatrix(y_hat_rf, df_test$Loan_Status)$overall[1]
+```
+
+Random forest model on df_test gives better result than logistic regression model.
+
+#### 6.2. Visualization model results
+
+Let's see result on ROC chart: sensitivity vs. specificity.
+
+```{r}
+roc_2 = pROC::roc(
+  df_test$Loan_Status
+  , y_hat_prob_3b
+)
+
+plot(roc_2) 
+
+pROC::auc(roc_2)
+```
+
+The closer the surface area is to 1, the better the model. In this model we've got 0.8102.
+
+For random forest model we've got:
+
+```{r}
+roc_4 = pROC::roc(
+  df_test$Loan_Status
+  , y_hat_prob_rf2
+)
+
+plot(roc_4) 
+
+pROC::auc(roc_4)
+```
+
+Area under curve is 0.7563 so it's less than logistic regression model.
+
+### 7. Prediction for new applicants
+
+The final result of this project is to automate the decision-making process for loan approval for new clients from test.csv dataset.
+
+First step is to prepare test.csv similarly to train.csv from the beginning.
+
+```{r}
+df_newdata = read.csv('D://data scientist//projekt//loan approval//raw_data//test.csv'
+, na.strings= "", sep = ";",
+stringsAsFactors = TRUE
+) %>% 
+  select(-Loan_ID)
+View(df_newdata)
+```
+
+```{r}
+colSums(is.na(df_newdata))
+```
+
+```{r}
+df_newdata$Gender[is.na(df_newdata$Gender)]= "Female"
+df_newdata$Dependents[is.na(df_newdata$Dependents)]= 1
+df_newdata$Self_Employed[is.na(df_newdata$Self_Employed)]= "Yes"
+df_newdata$LoanAmount[is.na(df_newdata$LoanAmount)] = (mean(df_newdata$LoanAmount, na.rm = TRUE))
+df_newdata$Loan_Amount_Term[is.na(df_newdata$Loan_Amount_Term)] = (mean(df_newdata$Loan_Amount_Term, na.rm = TRUE))
+df_newdata$Credit_History[is.na(df_newdata$Credit_History)]= 1
+table(df_newdata$Gender)
+table(df_newdata$Married)
+table(df_newdata$Dependents)
+table(df_newdata$Self_Employed)
+table(df_newdata$Loan_Amount)
+table(df_newdata$Loan_Amount_Term)
+table(df_newdata$Credit_History)
+colSums(is.na(df_newdata))
+summary(df_newdata)
+```
+
+Sprawdzamy ponownie ilość danych NA.
+
+```{r}
+colSums(is.na(df_newdata))
+```
+
+```{r}
+df_newdata$applicantquantity <- with(df_newdata, ifelse(df_newdata$CoapplicantIncome == 0, 1, 2))
+```
+
+```{r}
+df_newdata$anyDependents <- with(df_newdata, ifelse(df_newdata$Dependents == "0", 0, 1))
+```
+
+We make a prediction and save the result in the new column for logistic regression model and random forest model.
+
+```{r}
+y_hat_prob_logit_new = predict(model_3, newdata = df_newdata, type="response")
+
+df_newdata$Loan_Status_logit_new <- with(df_newdata, ifelse    (y_hat_prob_logit_new > 0.7, 1, 0)) %>% as.factor()
+
+y_hat_prob_rf_new = predict(model_rf, newdata = df_newdata, type="response")
+
+df_newdata$Loan_Status_rf_new <- with(df_newdata, ifelse    (y_hat_prob_rf_new == 0, 0, 1)) %>% as.factor()
+```
+
+Print table with results: positive and negative loan decision for each model.
+
+```{r}
+table(df_newdata$Loan_Status_logit_new)
+table(df_newdata$Loan_Status_rf_new)
+```
+
+Put it on the quick chart:
+
+```{r}
+colors = c("#7fba81", "#f01111")
+modeltype <- c("Logistic regression", "Random forest")
+decyzje <- c("positive", "negative")
+ 
+# Create the matrix of the values.
+Values <- matrix(c(242, 292, 125, 75),
+                nrow = 2, ncol = 2, byrow = TRUE)
+ 
+barplot(Values, main = "Loan approval", names.arg = modeltype,
+        xlab = "Model type", ylab = "Number of decisions", col = colors, width = 0.4)
+ 
+legend("center", decyzje, cex = 0.7, fill = colors)
+```
+
+### 8. Conclusions
+
+-   The models differs in importance of individual variables.
+
+```{=html}
+<!-- -->
+```
+-   The criteria for random forest model seems to be more understandable (importante variables are very similar to mortgage calculator).
+
+-   For random forest there is more positive decisions than for logistic regression model (292 vs 242) and less refusal (75 vs 125 for logistic regression model).
+
+-   Random forest model seems to be less carefull but increases access to loans.
+
+    End of file.
